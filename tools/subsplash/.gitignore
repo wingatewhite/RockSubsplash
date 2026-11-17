@@ -1,0 +1,7 @@
+# Generated exports, .slingshot files, id maps and ledgers contain personal data; keep them out of git.
+*.csv
+*.slingshot
+*.summary.json
+subsplash-idmap.json
+subsplash-ledger.json
+__pycache__/
