@@ -609,6 +609,86 @@ namespace Rock.Tests.Utility.ExtensionMethods
             Assert.AreEqual( "https://rock.proxy.me/page/12", actualUri.ToString() );
         }
 
+        /// <summary>
+        /// Verifies that a forwarded host that includes a port uses that port instead of throwing.
+        /// </summary>
+        [TestMethod]
+        public void GetForwardedRequestUri_ForwardedHostWithPortUsesHostPort()
+        {
+            var request = new Request( "http://localhost:8080/Login" );
+            request.Headers.Add( "X-FORWARDED-HOST", "rock.example.org:8443" );
+            request.Headers.Add( "X-FORWARDED-PROTO", "https" );
+
+            var actualUri = global::Rock.ExtensionMethods.GetForwardedRequestUri( request.RequestUri, request.Headers );
+
+            Assert.AreEqual( "https://rock.example.org:8443/Login", actualUri.ToString() );
+        }
+
+        /// <summary>
+        /// Verifies that only the first value of comma separated forwarded headers is used.
+        /// </summary>
+        [TestMethod]
+        public void GetForwardedRequestUri_CommaSeparatedForwardedHeadersUseFirstValue()
+        {
+            var request = new Request( "http://localhost:8080/Login" );
+            request.Headers.Add( "X-FORWARDED-HOST", "rock.example.org, internal.proxy" );
+            request.Headers.Add( "X-FORWARDED-PROTO", "https, http" );
+            request.Headers.Add( "X-FORWARDED-PORT", "443, 8080" );
+
+            var actualUri = global::Rock.ExtensionMethods.GetForwardedRequestUri( request.RequestUri, request.Headers );
+
+            Assert.AreEqual( "https://rock.example.org/Login", actualUri.ToString() );
+        }
+
+        /// <summary>
+        /// Verifies that a bracketed IPv6 forwarded host with a port is supported.
+        /// </summary>
+        [TestMethod]
+        public void GetForwardedRequestUri_BracketedIPv6HostWithPortIsSupported()
+        {
+            var request = new Request( "http://localhost:8080/Login" );
+            request.Headers.Add( "X-FORWARDED-HOST", "[2001:db8::1]:8443" );
+            request.Headers.Add( "X-FORWARDED-PROTO", "https" );
+
+            var actualUri = global::Rock.ExtensionMethods.GetForwardedRequestUri( request.RequestUri, request.Headers );
+
+            Assert.AreEqual( "https://[2001:db8::1]:8443/Login", actualUri.ToString() );
+        }
+
+        /// <summary>
+        /// Verifies that a forwarded host that cannot be parsed falls back to the request URL instead of throwing.
+        /// </summary>
+        [DataTestMethod]
+        [DataRow( "rock.example.org:notaport" )]
+        [DataRow( "rock.example.org/path" )]
+        [DataRow( "[2001:db8::1" )]
+        [DataRow( "bad host" )]
+        public void GetForwardedRequestUri_MalformedForwardedHostReturnsOriginalUrl( string forwardedHost )
+        {
+            var request = new Request( "http://localhost:8080/Login" );
+            request.Headers.Add( "X-FORWARDED-HOST", forwardedHost );
+            request.Headers.Add( "X-FORWARDED-PROTO", "https" );
+
+            var actualUri = global::Rock.ExtensionMethods.GetForwardedRequestUri( request.RequestUri, request.Headers );
+
+            Assert.AreEqual( "http://localhost:8080/Login", actualUri.ToString() );
+        }
+
+        /// <summary>
+        /// Verifies that an unsupported forwarded scheme falls back to the request URL.
+        /// </summary>
+        [TestMethod]
+        public void GetForwardedRequestUri_UnsupportedForwardedProtoReturnsOriginalUrl()
+        {
+            var request = new Request( "http://localhost:8080/Login" );
+            request.Headers.Add( "X-FORWARDED-HOST", "rock.example.org" );
+            request.Headers.Add( "X-FORWARDED-PROTO", "javascript" );
+
+            var actualUri = global::Rock.ExtensionMethods.GetForwardedRequestUri( request.RequestUri, request.Headers );
+
+            Assert.AreEqual( "http://localhost:8080/Login", actualUri.ToString() );
+        }
+
         private class Request : IRequest
         {
             public IPAddress RemoteAddress => throw new NotImplementedException();

@@ -160,12 +160,37 @@ namespace Rock
             // Added a custom header for forward hosts that is used by a language translation service called Weglot. Normally, we would not
             // add custom headers into Rock, but many organizations in the community use this service. We did reach out to them to see if they
             // would change to use the industry standard and were told no. Specifically the issue was when you use Weglot with Auth0.
-            var forwardedHost = headers["X-Forwarded-Host"] ?? headers["X-Original-Host"] ?? headers["weglot-forwarded-host"];
+            var forwardedHost = GetFirstForwardedValue( headers["X-Forwarded-Host"] ?? headers["X-Original-Host"] ?? headers["weglot-forwarded-host"] );
+            var forwardedProto = GetFirstForwardedValue( headers["X-Forwarded-Proto"] );
 
             // If no proxy just return the request URL
-            var isRequestForwaredFromProxy = forwardedHost != null && headers["X-Forwarded-Proto"] != null;
+            var isRequestForwaredFromProxy = forwardedHost != null && forwardedProto != null;
 
             if ( !isRequestForwaredFromProxy )
+            {
+                return requestUri;
+            }
+
+            /*
+                11/17/2026 - DEVIN
+
+                Proxies may send a forwarded host with a port ("example.org:443"), a comma separated
+                list when the request passed through several proxies ("a.org, b.org"), or a bracketed
+                IPv6 address. UriBuilder cannot parse those, and because this runs for every page
+                request (site cookie, routing) the UriFormatException broke the whole site. Use the
+                first value, split off any port, and fall back to the request URL when the result
+                still is not a plain host name with an http or https scheme.
+
+                Reason: A malformed forwarded header must not crash every request.
+            */
+            if ( !TrySplitForwardedHost( forwardedHost, out var host, out var hostPort )
+                || !IsPlainHostName( host ) )
+            {
+                return requestUri;
+            }
+
+            if ( !string.Equals( forwardedProto, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase )
+                && !string.Equals( forwardedProto, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase ) )
             {
                 return requestUri;
             }
@@ -173,21 +198,120 @@ namespace Rock
             // Assemble a URI from the proxied headers
             var builder = new UriBuilder( requestUri )
             {
-                Scheme = headers["X-Forwarded-Proto"].ToString(),
-                Host = forwardedHost
+                Scheme = forwardedProto.ToLowerInvariant(),
+                Host = host
             };
 
-            // If we have the original port then use it, otherwise reset to default port.
-            if ( headers["X-Forwarded-Port"] != null )
+            // If we have the original port then use it, otherwise use the port sent with the host or reset to default port.
+            var forwardedPort = GetFirstForwardedValue( headers["X-Forwarded-Port"] );
+
+            if ( forwardedPort != null )
             {
-                builder.Port = headers["X-Forwarded-Port"].AsIntegerOrNull() ?? -1;
+                builder.Port = ToValidPortOrDefault( forwardedPort.AsIntegerOrNull() );
             }
             else
             {
-                builder.Port = -1;
+                builder.Port = ToValidPortOrDefault( hostPort );
             }
 
-            return builder.Uri;
+            try
+            {
+                return builder.Uri;
+            }
+            catch ( UriFormatException )
+            {
+                return requestUri;
+            }
+        }
+
+        /// <summary>
+        /// Gets the first value of a forwarded header, which proxies append to as a comma separated list.
+        /// </summary>
+        /// <param name="headerValue">The raw header value.</param>
+        /// <returns>The trimmed first value, or <c>null</c> when there is no value.</returns>
+        private static string GetFirstForwardedValue( string headerValue )
+        {
+            if ( headerValue == null )
+            {
+                return null;
+            }
+
+            var firstValue = headerValue.Split( ',' )[0].Trim();
+
+            return firstValue.Length > 0 ? firstValue : null;
+        }
+
+        /// <summary>
+        /// Splits a forwarded host value such as "example.org:8080" or "[::1]:8080" into the host and port.
+        /// </summary>
+        /// <param name="value">The forwarded host value.</param>
+        /// <param name="host">The host without brackets or port.</param>
+        /// <param name="port">The port, or <c>null</c> when none was included.</param>
+        /// <returns><c>true</c> if the value could be split; otherwise <c>false</c>.</returns>
+        private static bool TrySplitForwardedHost( string value, out string host, out int? port )
+        {
+            host = value;
+            port = null;
+
+            string portText = null;
+
+            if ( value.StartsWith( "[" ) )
+            {
+                var closingBracketIndex = value.IndexOf( ']' );
+
+                if ( closingBracketIndex < 0 )
+                {
+                    return false;
+                }
+
+                host = value.Substring( 1, closingBracketIndex - 1 );
+                var remainder = value.Substring( closingBracketIndex + 1 );
+
+                if ( remainder.Length > 0 )
+                {
+                    if ( !remainder.StartsWith( ":" ) )
+                    {
+                        return false;
+                    }
+
+                    portText = remainder.Substring( 1 );
+                }
+            }
+            else
+            {
+                var colonIndex = value.IndexOf( ':' );
+
+                // More than one colon without brackets is a bare IPv6 address with no port.
+                if ( colonIndex >= 0 && colonIndex == value.LastIndexOf( ':' ) )
+                {
+                    host = value.Substring( 0, colonIndex );
+                    portText = value.Substring( colonIndex + 1 );
+                }
+            }
+
+            if ( portText != null )
+            {
+                var parsedPort = portText.AsIntegerOrNull();
+
+                if ( !parsedPort.HasValue || parsedPort.Value < 1 || parsedPort.Value > 65535 )
+                {
+                    return false;
+                }
+
+                port = parsedPort;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Returns the port when it is a valid TCP port, otherwise -1 so UriBuilder uses the scheme default.
+        /// </summary>
+        /// <param name="port">The port.</param>
+        /// <returns>The port or -1.</returns>
+        private static int ToValidPortOrDefault( int? port )
+        {
+            return port.HasValue && port.Value >= 1 && port.Value <= 65535 ? port.Value : -1;
         }
 
         /// <summary>
